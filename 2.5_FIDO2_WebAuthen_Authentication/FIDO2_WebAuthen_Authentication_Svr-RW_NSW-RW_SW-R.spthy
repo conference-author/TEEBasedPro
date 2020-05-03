@@ -1,0 +1,406 @@
+theory FIDO2_WebAuthen_Authentication_Svr_RW_NSW_RW_SW_R
+
+begin
+
+functions:  
+            nsToken/1[private],   // access token for RAM/Flash of Non-Secure world on TEE-based platform   (e.g. Client)
+            sToken/1[private],    // access token for RAM/Flash of Secure world on TEE-based platform       (e.g. Authenticator)
+            svrToken/1[private]  // access token for RAM/Flash of server in WebAuthn protocol              (e.g. Server)
+
+builtins: hashing, signing
+
+/* ******************** Web Authentication Protocol involving entities ******************** */
+// User:          A user uses authenticator to authenticate himself/herself during the protocol.
+// Authenticator: A cryptographic entity, existing in the TEE world of the local device, can register a 
+//                user under a given Server and later assert possession of the registered public key credential, 
+//                and optionally verify the user, when requested by the TEE world.
+// Client:        Client-side of the protocol, existing in non-TEE world of the local device, processes and forwards the messages
+//                exchanging between the Authenticator and the Server.
+// Server:        Server-side of the protocol, existing in the remote server, registers and authenticates users during the protocol.
+
+
+/* ******************** Registration Setup ( RS1 ) ******************** */
+/* ******************** Registration Setup ( RS1 ) ******************** */
+/* ******************** Registration Setup ( RS1 ) ******************** */
+/* ******************** Registration Setup ( RS1 ) ******************** */
+/* ******************** Registration Setup ( RS1 ) ******************** */
+
+/*  (RS1) Authenticator generates authentication key, and stores them in its flash.
+    After registration, Server registers and stores authentication public key in its flash.
+*/
+rule Registration_Setup:
+      [ 
+        // Authenticator generates authentication key
+        Fr( ~credSk )
+      ]
+    --[ 
+        ServerRegisterAuthen( $SvrID, $AAGUID, $UserName, pk(~credSk) )
+      ]->
+      [ 
+        // Authenticator stores its authentication key in its flash
+        !Flash( sToken($AAGUID), <$SvrID, $UserName, ~credSk> ),
+        // Server registers and stores authentication public key in its flash
+        !Flash( svrToken($SvrID), <$AAGUID, $UserName, pk(~credSk)> )
+      ]
+
+
+/* ******************** Authentication step ( A1~A6 ) ******************** */
+/* ******************** Authentication step ( A1~A6 ) ******************** */
+/* ******************** Authentication step ( A1~A6 ) ******************** */
+/* ******************** Authentication step ( A1~A6 ) ******************** */
+/* ******************** Authentication step ( A1~A6 ) ******************** */
+
+
+/*  (A1) User sends a authentiation request (with user name $UserName) to Server via Client
+*/
+rule User_SendAuthenticationRequest_to_Server_via_Client:
+      [ ] 
+    --[ ]->
+      [ 
+        RAM( nsToken($ClientID), $UserName ),
+        Out(< $SvrID, $ClientID, <$UserName, 'Authentication'> >)
+      ]
+
+
+/*  (A2) Server checks that the received $UserName has already been registered,
+    and then generates and sends a challenge ~chalA to Client
+*/
+rule Server_PublicKeyCredentialRequestOptions_to_Client:
+      [ 
+        // Server receives authentiation request from User $UserName via Client
+        In(< $SvrID, $ClientID, <$UserName, 'Authentication'> >),
+        // Server checks $UserName has already been registered in its flash
+        !Flash( svrToken($SvrID), <$AAGUID, $UserName, pk(credSk)> ),
+        // Server generates a challenge ~chalA
+        Fr( ~chalA ) 
+      ] 
+    --[
+        SanityCheck1('Arrived')
+      ]->
+      [ 
+        RAM( svrToken($SvrID), <~chalA, $SvrID, $UserName> ), 
+        // Server sends the challenge ~chalA to Client
+        Out(< $SvrID, $ClientID, <~chalA, $SvrID, $UserName, 'Authentication'> >) 
+      ]
+
+
+/*  (A3) Client receives and forwards the challenge,
+    together with clientDataHash to Authenticator in the TEE world
+*/
+rule Client_AuthenticatorGetAssertion_Request_to_Authen:
+      let
+        clientData = <chalA, $ClientID>
+        clientDataHash = h(clientData)
+      in
+      [       
+        In(< $SvrID, $ClientID, <chalA, $SvrID, $UserName, 'Authentication'> >)
+      ]
+    --[
+        SanityCheck2('Arrived')
+      ]->
+      [
+        RAM( nsToken($ClientID), chalA ),
+        Out(< $ClientID, $AAGUID, <$SvrID, clientDataHash, $UserName, 'Authentication'> >) 
+      ]
+
+
+/*  (A4.1) The TEE world shows the authentication info to User. 
+    After User verifying $UserName and generating transaction info ~transInfo,
+    Authenticator generates authentication assertion signature using authentication private key,
+    and then Authenticator returns the related authenticator data and authentication signature to Client.
+
+    NOTE: a random number ~nonce is used instead of monotonic increasing counter in Authenticator,
+    the ~nonce could be constant at zero if Authenticator doesn't support a counter.
+*/
+rule Authen_User_Allow_AuthenticatorGetAssertion_Response_to_Client:
+      let
+        authData = <$SvrID, ~nonce, ~transInfo>
+        assertSig = sign(<authData, clientDataHash>, credSk)
+      in
+      [ 
+        // The message is received from LOC.
+        In(< $ClientID, $AAGUID, <$SvrID, clientDataHash, $UserName, 'Authentication'> >) ,
+        // User generates transaction information.
+        Fr( ~transInfo ),
+        // Authenticator retrieves credential source (including the authentication key) in the secure flash.
+        !Flash( sToken($AAGUID), <$SvrID, $UserName, credSk> ),
+        // Authenticator generates a nonce.
+        Fr( ~nonce )
+      ]
+    --[
+        Alive( $AAGUID ),
+        UserAuthVerification( $SvrID, $AAGUID, $UserName, credSk, ~transInfo, 'Allow' ),
+        SanityCheck3_1('Arrived')
+      ]->
+      [ 
+        // Authenticator returns the related authenticator data and authentication signature to Client.
+        Out(< $ClientID, $AAGUID, <authData, assertSig> >) 
+      ]
+
+
+/*  (A4.2) The TEE world shows the authentication and transaction info to User. 
+    With User's rejection, Authenticator returns an error 'NowAllowedError' to Client
+*/
+rule Authen_User_Reject_AuthenticatorGetAssertion:
+      [ 
+        // The message is received from LOC
+        In(< $ClientID, $AAGUID, <$SvrID, clientDataHash, $UserName, 'Authentication'> >)
+      ]
+    --[
+        Alive( $AAGUID ),
+        UserAuthRejection( $SvrID, $AAGUID, $UserName, 'Reject' ),
+        SanityCheck3_2('Arrived')
+      ]->
+      [ 
+        Out(< $ClientID, $AAGUID, 'NotAllowedError' >) 
+      ]
+
+
+/*  (A5) Client receives the Authentication signature and related resources from Authenticator,
+    and forwards the resource together with clientData to Server
+*/
+rule Client_AuthenticatorAssertionResponse_to_Server:
+      let
+        clientData = <chalA, $ClientID>
+      in
+      [ 
+        RAM( nsToken($ClientID), chalA ),
+        In(< $ClientID, $AAGUID, <authData, assertSig> >) 
+      ]
+    --[
+        SanityCheck4('Arrived')
+      ]->
+      [         
+        Out(< $SvrID, $ClientID, <clientData, authData, assertSig> >) 
+      ]
+
+
+/*  (A6) Server checks the chanllenge and verifies the authentication signature for the transaction info.
+    If the operations succeed, Server proceeds to process the transaction info.
+*/
+rule Server_VerifyAssertionSignature:
+      let
+          clientData = <chalA, $ClientID>
+          authData = <$SvrID, nonce, transInfo>
+          clientDataHash = h(clientData)
+      in
+      [ 
+        In(< $SvrID, $ClientID, <<chalA, $ClientID>, <$SvrID, nonce, transInfo>, assertSig> >),
+        // Server retrive the challenge from RAM
+        RAM( svrToken($SvrID), <chalA, $SvrID, $UserName> ), 
+        // Server retrive registered Authenticator credential resources from Flash
+        !Flash( svrToken($SvrID), <$AAGUID, $UserName, pk(credSk)> )
+      ]
+    --[
+        SanityCheck5('Arrived'),
+        ServerVerifyAuthenAssertion( $SvrID, $AAGUID, $UserName, pk(credSk), transInfo ),
+        Eq( verify(assertSig, <authData, clientDataHash>, pk(credSk)), true )  
+      ]->
+      [        
+        Authenticated( $SvrID, $AAGUID, $UserName, pk(credSk), transInfo ) 
+      ]      
+
+
+////////////////////////////////////////////////////////////////////////////
+// Server is corrupted, and the attacker can read AND/OR modify
+// the Server-related RAM, flash and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule SvrAttacker_Read_SvrFlash:
+    [ !Flash(svrToken($SvrID), x) ]   --[ Reveal($SvrID, x) ]->    [ Out(x) ]
+
+rule SvrAttacker_Read_SvrRAM:
+    [ RAM(svrToken($SvrID), x) ]  --[ Reveal($SvrID, x) ]->    [ Out(x) ]
+
+// rule SvrAttacker_Read_TLS:    
+//     [ TLS( $SvrID, $ClientID, x )   ]  --[ Reveal(<$SvrID,$ClientID>, x) ]->    [ Out(x) ] 
+
+rule SvrAttacker_Write_SvrFlash:
+    [ !Flash(svrToken($SvrID), x),  In(y) ]  --[ Modification($SvrID, x, y) ]->    [ !Flash(svrToken($SvrID), y) ]
+
+rule SvrAttacker_Write_SvrRAM:
+    [ RAM(svrToken($SvrID), x),  In(y) ]   --[ Modification($SvrID, x, y) ]->    [ !Flash(svrToken($SvrID), y) ]
+
+// rule SvrAttacker_Write_TLS:    
+//     [ TLS( $SvrID, $ClientID, x ),  In( y )   ]  --[ Modification(<$SvrID,$ClientID>, x, y) ]->    [ TLS( $SvrID, $ClientID, y ) ] 
+
+
+////////////////////////////////////////////////////////////////////////////
+// Secure world is corrupted, and the attacker can read AND/OR modify
+// the Secure-world-related RAM, flash and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule SwAttacker_Read_SwFlash:
+    [ !Flash(sToken($AAGUID), x) ]   --[ Reveal($AAGUID, x) ]->    [ Out(x) ]
+
+rule SwAttacker_Read_SwRAM:
+    [ RAM(sToken($AAGUID), x) ]  --[ Reveal($AAGUID, x) ]->    [ Out(x) ]
+
+rule SwAttacker_Read_LOC:    
+    [ LOC( $ClientID, $AAGUID, x )   ]  --[ Reveal(<$ClientID,$AAGUID>, x) ]->    [ Out(x) ] 
+
+// rule SwAttacker_Write_SwFlash:
+//     [ !Flash(sToken($AAGUID), x),  In(y) ]  --[ Modification($AAGUID, x, y) ]->    [ !Flash(sToken($AAGUID), y) ]
+
+// rule SwAttacker_Write_SwRAM:
+//     [ RAM(sToken($AAGUID), x),  In(y) ]   --[ Modification($AAGUID, x, y) ]->    [ !Flash(sToken($AAGUID), y) ]
+
+// rule SwAttacker_Write_LOC:    
+//     [ LOC( $ClientID, $AAGUID, x ),  In( y )   ]  --[ Modification(<$ClientID,$AAGUID>, x, y) ]->    [ LOC( $ClientID, $AAGUID, y ) ] 
+
+
+////////////////////////////////////////////////////////////////////////////
+// Non-secure world is corrupted, and the attacker can read AND/OR modify
+// the NS-World-related RAM, flash and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule NswAttacker_Read_NswFlash:
+    [ !Flash(nsToken($ClientID), x)  ]   --[ Reveal($ClientID, x) ]->    [ Out(x) ]
+
+rule NswAttacker_Read_NswRAM:
+    [ RAM(nsToken($ClientID), x)   ]  --[ Reveal($ClientID, x) ]->    [ Out(x) ]    
+
+// rule NswAttacker_Read_LOC:    
+//     [ LOC( $ClientID, $AAGUID, x )   ]  --[ Reveal(<$ClientID,$AAGUID>, x) ]->    [ Out(x) ] 
+
+// rule NswAttacker_Read_TLS:    
+//     [ TLS( $SvrID, $ClientID, x )   ]  --[ Reveal(<$SvrID,$ClientID>, x) ]->    [ Out(x) ] 
+
+rule NswAttacker_Write_NswFlash:
+    [ !Flash(nsToken($ClientID), x),  In( y ) ]  --[ Modification($ClientID, x, y) ]->    [ !Flash(nsToken($ClientID), y) ]
+
+rule NswAttacker_Write_NswRAM:
+    [ RAM(nsToken($ClientID), x),  In( y ) ]   --[ Modification($ClientID, x, y) ]->    [ !Flash(nsToken($ClientID), y) ]
+
+// rule NswAttacker_Write_LOC:    
+//     [ LOC( $ClientID, $AAGUID, x ),  In( y )   ]  --[ Modification(<$ClientID,$AAGUID>, x, y) ]->    [ LOC( $ClientID, $AAGUID, y ) ] 
+
+// rule NswAttacker_Write_TLS:    
+//     [ TLS( $SvrID, $ClientID, x ),  In( y )   ]  --[ Modification(<$SvrID,$ClientID>, x, y) ]->    [ TLS( $SvrID, $ClientID, y ) ] 
+
+
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+
+
+restriction Equality:
+  "
+    All x y #i. Eq(x,y) @i ==> x = y
+  "
+
+
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+
+
+// lemma SanityCheck1 [use_induction]:
+// exists-trace "Ex #i. SanityCheck1('Arrived') @ #i"
+
+// lemma SanityCheck2 [use_induction]:
+// exists-trace "Ex #i. SanityCheck2('Arrived') @ #i"
+
+// lemma SanityCheck3_1 [use_induction]:
+// exists-trace "Ex #i. SanityCheck3_1('Arrived') @ #i"
+
+// lemma SanityCheck3_2 [use_induction]:
+// exists-trace "Ex #i. SanityCheck3_2('Arrived') @ #i"
+
+// lemma SanityCheck4 [use_induction]:
+// exists-trace "Ex #i. SanityCheck4('Arrived') @ #i"
+
+// lemma SanityCheck5 [use_induction]:
+// exists-trace "Ex #i. SanityCheck5('Arrived') @ #i"
+
+
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+
+
+lemma authentication_private_key_secrecy:
+    "(All #i1 #i2 #i3 svrID aaguID userName credSk transInfo.
+    (
+      // If Server registers pk(credSk) as authentication key for User (userName) using Authenticator (aaguID),
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk) ) @ i1
+      &
+      // and User has allowed Authenticator to authenticate the transaction info "transInfo",
+      UserAuthVerification( svrID, aaguID, userName, credSk, transInfo, 'Allow' ) @ i2
+      &
+      // and transaction info "transInfo" is authenticated by the Server,
+      ServerVerifyAuthenAssertion( svrID, aaguID, userName, pk(credSk), transInfo ) @ i3
+    )
+    // then the attacker can't get the credential private key credSk
+    ==> not (Ex #i4. K( credSk ) @ i4 )
+  )"
+
+
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+
+
+lemma aliveness:
+"
+  ( All #i svrID aaguID userName credSk transInfo.
+      ServerVerifyAuthenAssertion( svrID, aaguID, userName, pk(credSk), transInfo ) @ i
+    ==> 
+      ( Ex #j. Alive( aaguID ) @ j )
+  )
+"
+
+
+lemma weak_agreement:
+"
+  ( All #i svrID aaguID userName credSk transInfo.
+      ServerVerifyAuthenAssertion( svrID, aaguID, userName, pk(credSk), transInfo ) @ i
+    ==> 
+      ( 
+        Ex credSk2 transInfo2 #j. 
+        UserAuthVerification( svrID, aaguID, userName, credSk2, transInfo2, 'Allow' ) @ j
+       )
+  )
+"
+
+
+lemma ni_agreement:
+"
+  ( All #i svrID aaguID userName credSk transInfo.
+      ServerVerifyAuthenAssertion( svrID, aaguID, userName, pk(credSk), transInfo ) @ i
+    ==> 
+      ( 
+        Ex #j. 
+        UserAuthVerification( svrID, aaguID, userName, credSk, transInfo, 'Allow' ) @ j
+       )
+  )
+"
+
+
+lemma i_agreement:
+"
+  ( All #i svrID aaguID userName credSk transInfo.
+      ServerVerifyAuthenAssertion( svrID, aaguID, userName, pk(credSk), transInfo ) @ i
+    ==> 
+      ( 
+        Ex #j. 
+        UserAuthVerification( svrID, aaguID, userName, credSk, transInfo, 'Allow' ) @ j
+        & #j < #i
+        & not ( Ex svrID2 aaguID2 userName2 #i2. 
+                   ServerVerifyAuthenAssertion( svrID2, aaguID2, userName2, pk(credSk), transInfo ) @ i2
+                &  not (#i2 = #i)
+              )
+      )
+  )
+"
+
+
+end

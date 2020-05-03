@@ -1,0 +1,464 @@
+theory ARM_TF_A_BeforeFixed_NSW_RW_SW_R
+
+begin
+
+functions: 
+			prog/3,
+			codes/1,
+			data/1,
+			nsToken/1[private],   // token for ROM/RAM/Flash of Non-Secure world on TEE-based platform
+            sToken/1[private]    // token for ROM/RAM/Flash of Secure world on TEE-based platform
+
+builtins: hashing, signing
+
+
+/* ******************** Initialization step (I1) ******************** */
+/* ******************** Initialization step (I1) ******************** */
+/* ******************** Initialization step (I1) ******************** */
+/* ******************** Initialization step (I1) ******************** */
+/* ******************** Initialization step (I1) ******************** */
+
+
+/*	(I1) Manufacturer of the ARM TrustZone platform generates all the keys, certificates
+	and images, which are used during the boot process of ARM TrustZone platform. 
+
+	After generation, Manufacturer burns/stores the keys, certs and images into ARM platform.
+	The boot images (i.e. bl1, bl2, bl31, bl32 and bl33) correspond to the boot components of the TrustZone platform.
+	The keys and certs are named by the corresponding boot images (e.g. "bl*")
+
+	For integrity consideration, bl1 and the hash of root public key "rotk_pk" are burnt into ROM.
+	Except bl1 and the hash of rotk_pk, all the other images, certifiates and public keys in 
+	Chain of Trust are stored in the NSW-accessable flash on the TEE-based platform.
+*/
+rule Manufacturer_PlatformInitialization:
+	let	
+		rotk_sk = ~rotk_sk
+		tk_sk = ~tk_sk
+		ntk_sk = ~ntk_sk
+		bl31k_sk = ~bl31k_sk
+		bl32k_sk = ~bl32k_sk
+		bl33k_sk = ~bl33k_sk
+		// Images generation
+		bl1 = prog('bl1', codes(n), data(n))		//BL1 image
+		bl2 = prog('bl2', codes(n), data(n))		//BL2 image
+		bl31 = prog('bl31', codes(n), data(n))		//BL31 image
+		bl32 = prog('bl32', codes(n), data(n)) 		//BL32 image
+		bl33 = prog('bl33', codes(n), data(n)) 		//BL33 image
+		// Certificates generation
+		bl2_cert 	= sign(<h(bl2), pk(rotk_sk), n>, rotk_sk)
+		tk_cert 	= sign(<pk(tk_sk), pk(ntk_sk), pk(rotk_sk), n>, rotk_sk)	
+		bl31k_cert 	= sign(<pk(bl31k_sk), n>, tk_sk)
+		bl31_cert 	= sign(<h(bl31), n>, bl31k_sk)
+		bl32k_cert 	= sign(<pk(bl32k_sk), n>, tk_sk)
+		bl32_cert 	= sign(<h(bl32), n>, bl32k_sk)
+		bl33k_cert 	= sign(<pk(bl33k_sk), n>, ntk_sk)
+		bl33_cert 	= sign(<h(bl33), n>, bl33k_sk)
+	in
+	[
+		// Keys generation
+		Fr(~rotk_sk), Fr(~tk_sk), Fr(~ntk_sk), Fr(~bl31k_sk), Fr(~bl32k_sk), Fr(~bl33k_sk),
+		// Let the attacker to choose the version of released BL1~BL33
+		In(n)
+	]
+	--[
+		Alive( 'Manufacturer_PlatformInitialization' ),
+		// Release a version of certs, keys and images
+		Release_Keys( <rotk_sk, tk_sk, ntk_sk, bl31k_sk, bl32k_sk, bl33k_sk> ),
+		Release_BL(bl1), 
+		Release_BL(bl2), 
+		Release_BL(bl31), 
+		Release_BL(bl32), 
+		Release_BL(bl33),
+		Release_BlSet( <bl1, bl2, bl31, bl32, bl33> ),
+		Release_Certs( <bl2_cert,tk_cert, bl31k_cert, bl31_cert, bl32k_cert, bl32_cert, bl33k_cert, bl33_cert> )
+	]->
+	[	
+		// For integrity consideration, bl1 and the hash of rotk_pk are burnt into BootROM and Secure Element (SE).
+		!ROM( sToken($TeeID), 	bl1 ),
+		!ROM( sToken($TeeID), 	h(pk(rotk_sk)) ),	
+		// All of the certificates (includeing public keys) and images (except bl1 and the hash of rotk_pk) are stored 
+		// in a regular partition of Non-Volatile Storage on the TEE platform. 
+		!Flash( nsToken($ReeID), 	bl2 ),
+		!Flash( nsToken($ReeID), 	bl31 ),
+		!Flash( nsToken($ReeID), 	bl32 ),
+		!Flash( nsToken($ReeID), 	bl33 ),
+		!Flash( nsToken($ReeID), 	<bl2_cert, <h(bl2), pk(rotk_sk), n>>),
+		!Flash( nsToken($ReeID), 	<tk_cert, <pk(tk_sk), pk(ntk_sk), pk(rotk_sk), n>>),
+		!Flash( nsToken($ReeID), 	<bl31k_cert, <pk(bl31k_sk), n>>),
+		!Flash( nsToken($ReeID), 	<bl31_cert, <h(bl31), n>>),
+		!Flash( nsToken($ReeID), 	<bl32k_cert, <pk(bl32k_sk), n>>),
+		!Flash( nsToken($ReeID), 	<bl32_cert, <h(bl32), n>>),
+		!Flash( nsToken($ReeID), 	<bl33k_cert, <pk(bl33k_sk), n>>),
+		!Flash( nsToken($ReeID), 	<bl33_cert, <h(bl33), n>>)
+	]
+
+
+/* ******************** Trusted boot step (TB1~TB4) ******************** */
+/* ******************** Trusted boot step (TB1~TB4) ******************** */
+/* ******************** Trusted boot step (TB1~TB4) ******************** */
+/* ******************** Trusted boot step (TB1~TB4) ******************** */
+/* ******************** Trusted boot step (TB1~TB4) ******************** */
+
+
+/* 	(TB1) The TrustZone platform is powered on, 
+	and loads the images of BL1 from BootRom to its SW RAM
+*/
+rule Poweron:
+	let
+		x_bl1 = prog('bl1', codes(n), data(n))		//BL1 image
+	in
+	[
+		!ROM( sToken($TeeID), 	x_bl1)
+	]
+	--[
+		SanityCheck0('Arrived'),
+		Poweron(x_bl1)
+	]->
+	[
+		RAM( sToken($TeeID), 	x_bl1 )
+	]
+
+
+/* 	(TB2) BL1 verifies the vadility of BL2-related keys, hash values and certificates.
+	After successful check, BL2 image is loaded (and then executed) by BL1.
+*/
+rule BL1:
+	let
+		x_bl1 = prog('bl1', codes(n), data(n))		//BL1 image
+		x_bl2 = prog('bl2', codes(n), data(n))		//BL2 image
+	in
+	[
+		RAM( sToken($TeeID), x_bl1 ),
+		// BL1 reads the hash of root key ROTK_PK from Secure Element,
+		// together with BL2-related hash values and certificates from Non-Secure-World Non-Volatile Storage
+		!ROM( sToken($TeeID), x_hash_pk_rotk ),
+		!Flash( nsToken($ReeID), <x_bl2_cert, <hash_bl2, pk_rotk, n>> ),
+		!Flash( nsToken($ReeID), x_bl2 )
+	]
+	--[
+		SanityCheck1('Arrived'),	
+		// BL1 verifies the vadility of BL2-related hash values and certificates.
+		Eq(x_hash_pk_rotk, h(pk_rotk)),
+		Eq(verify(x_bl2_cert, <hash_bl2, pk_rotk, n>, pk_rotk), true),
+		Eq(hash_bl2, h(x_bl2)),
+		// After successful check, BL1 anounces successful verification of BL2 image "x_bl2"
+		!Verified_BL( x_bl2 )
+	]->
+	[
+		// BL2 image is verified.	
+		!Verified_BL( x_bl2 ),
+		// BL2 image is loaded into RAM (and executed).
+		RAM( sToken($TeeID), x_bl2 )
+	]
+	
+
+/* 	(TB3.1) BL2 verifies the vadility of BL31-related keys, hash values and certificates.
+*/
+rule BL2_VerifyBL31:
+	let
+		x_bl2 = prog('bl2', codes(n), data(n))		//BL2 image
+		x_bl31 = prog('bl31', codes(n), data(n))	//BL31 image
+	in
+	[
+		// BL2 image is verified.
+		!Verified_BL( x_bl2 ),
+		// BL2 image is loaded into RAM (and executed).
+		RAM( sToken($TeeID), x_bl2 ),
+		// BL2 reads the hash of ROTK_PK, BL33-related keys, images and certificates from SE and Flash.
+		!ROM( sToken($TeeID),  	 x_hash_pk_rotk),	
+		!Flash( nsToken($ReeID), <x_tk_cert, <pk_tk, pk_ntk, pk_rotk, n>>),
+		!Flash( nsToken($ReeID), <x_bl31k_cert, pk_bl31k, n>),
+		!Flash( nsToken($ReeID), <x_bl31_cert, hash_bl31, n>),
+		!Flash( nsToken($ReeID), x_bl31)
+	]
+	--[
+		SanityCheck2_1('Arrived'),
+		// If the hash of public part of "rotk" extracted from "tk_cert" equals the one burnt in ROM 
+		// Then the public part of root key "pk_rotk" is the expected one.
+		Eq(x_hash_pk_rotk, h(pk_rotk)),
+		// BL2 checks the vadility of BL31-related certs and images hash values.
+		Eq(verify(x_tk_cert, <pk_tk, pk_ntk, pk_rotk, n>, pk_rotk), true),
+		Eq(verify(x_bl31k_cert, <pk_bl31k, n>, pk_tk), true),
+		Eq(verify(x_bl31_cert, <hash_bl31, n>, pk_bl31k), true),
+		Eq(hash_bl31, h(x_bl31)),
+		// After all the checks succeed, BL2 has verified the integrity of BL31 image.
+		!Verified_BL( x_bl31 )
+	]->
+	[
+		// BL2 image is loaded into RAM (and executed).
+		// RAM( sToken($TeeID), x_bl2 ),
+		// After all the checks succeed, BL2 has verified the integrity of BL31 image.
+		!Verified_BL( x_bl31 )
+	]	
+
+
+/* 	(TB3.2) BL2 verifies the vadility of BL32-related keys, hash values and certificates.
+	The verification process is similar to the BL31 verification process.
+*/
+rule BL2_VerifyBL32:
+	let
+		x_bl2 = prog('bl2', codes(n), data(n))		// BL2 image
+		x_bl32 = prog('bl32', codes(n), data(n)) 	// BL32 image
+	in
+	[
+		// BL2 image is verified.
+		!Verified_BL( x_bl2 ),
+		// BL2 image is loaded into RAM (and executed).
+		RAM( sToken($TeeID), x_bl2 ),
+		// BL2 reads the hash of ROTK_PK, BL33-related keys, images and certificates from SE and Flash.
+		!ROM( sToken($TeeID), 	 x_hash_pk_rotk),
+		!Flash( nsToken($ReeID), <x_tk_cert, <pk_tk, pk_ntk, pk_rotk, n>>),
+		!Flash( nsToken($ReeID), <x_bl32k_cert, <pk_bl32k, n>>),
+		!Flash( nsToken($ReeID), <x_bl32_cert, <hash_bl32, n>>),
+		!Flash( nsToken($ReeID), x_bl32)
+	]
+	--[
+		SanityCheck2_2('Arrived'),
+		// BL2 checks the vadility of the public part of root key "pk_rotk".
+		Eq(x_hash_pk_rotk, h(pk_rotk)),
+		// BL2 checks the vadility of BL32-related certs and images hash values.
+		Eq(verify(x_tk_cert, <pk_tk, pk_ntk, pk_rotk, n>, pk_rotk), true),
+		Eq(verify(x_bl32k_cert, <pk_bl32k, n>, pk_tk), true),
+		Eq(verify(x_bl32_cert, <hash_bl32, n>, pk_bl32k), true),
+		Eq(hash_bl32, h(x_bl32)),	
+		// After all the checks succeed, BL2 has verified the integrity of BL32 image.
+		!Verified_BL( x_bl32 )
+	]->
+	[
+		// BL2 image is loaded into RAM (and executed).
+		// RAM( sToken($TeeID), x_bl2 ),
+		// After all the checks succeed, BL2 has verified the integrity of BL32 image.
+		!Verified_BL( x_bl32 )
+	]
+
+
+/* 	(TB3.3) BL2 verifies the vadility of BL33-related keys, hash values and certificates
+*/
+rule BL2_VerifyBL33:
+	let
+		x_bl2 = prog('bl2', codes(n), data(n))			//BL2	
+		x_bl33 = prog('bl33', codes(n33), data(n33)) 		//BL33
+	in
+	[
+		// BL2 image is verified.
+		!Verified_BL( x_bl2 ),	
+		// BL2 image is loaded into RAM (and executed).
+		RAM( sToken($TeeID), x_bl2 ),
+		// BL2 reads the hash of ROTK_PK, BL33-related keys, images and certificates from SE and Flash.
+		!ROM( sToken($TeeID), 	 x_hash_pk_rotk),
+		!Flash( nsToken($ReeID), <x_tk_cert, <pk_tk, pk_ntk, pk_rotk, n>>),
+		!Flash( nsToken($ReeID), <x_bl33k_cert, <pk_bl33k, n>>),
+		!Flash( nsToken($ReeID), <x_bl33_cert, <hash_bl33, n>>),
+		!Flash( nsToken($ReeID), x_bl33)
+	]
+	--[
+		SanityCheck2_3('Arrived'),
+		// BL2 checks the vadility of the public part of Root of Trust Key "pk_rotk".
+		Eq(x_hash_pk_rotk, h(pk_rotk)),
+		// BL2 checks the vadility of BL33-related certs and images hash values.
+		Eq(verify(x_tk_cert, <pk_tk, pk_ntk, pk_rotk, n>, pk_rotk), true),
+		Eq(verify(x_bl33k_cert, <pk_bl33k, n>, pk_ntk), true),
+		Eq(verify(x_bl33_cert, <hash_bl33, n>, pk_bl33k), true),	
+		Eq(hash_bl33, h(x_bl33)),
+		// After all the checks succeed, BL2 has verified the integrity of BL33 image.
+		!Verified_BL( x_bl33 )
+	]-> 
+	[
+		// BL2 image is loaded into RAM (and executed).
+		// RAM( sToken($TeeID), x_bl2 ),
+		// After all the checks succeed, BL2 has verified the integrity of BL33 image.
+		!Verified_BL( x_bl33 )
+	]
+
+
+/* 	(TB4) After successful verification of BL31~BL33-related keys, hash values and certificates
+	BL2 loads BL31~BL33 into RAM (and then execute them).
+*/
+rule BL2_Loading:
+	let
+		bl1 = prog('bl1', codes(n), data(n))		//Bl1
+		bl2 = prog('bl2', codes(n), data(n))		//Bl2	
+		bl31 = prog('bl31', codes(n), data(n))		//Bl31	
+		bl32 = prog('bl32', codes(n), data(n)) 		//Bl32 	
+		bl33 = prog('bl33', codes(n33), data(n33)) 		//Bl33
+	in
+	[
+		// BL1 image is loaded into RAM (and executed).
+		RAM( sToken($TeeID), bl1),
+		// BL2 image is verified.
+		!Verified_BL(bl2),
+		// BL2 image is loaded into RAM (and executed).
+		RAM( sToken($TeeID), bl2),
+		// BL31~BL33 images are verified.
+		!Verified_BL(bl31),
+		!Verified_BL(bl32),
+		!Verified_BL(bl33)
+	]
+	--[
+		SanityCheck3('Arrived'),
+		// "RAMLayout" catches that BL1~BL32 have been loaded into Secure RAM
+		// and BL33 has been loaded into Non-Secure RAM.
+		RAMLayout(<'S', bl1, bl2, bl31, bl32>, <'NS', bl33>)	
+	]->
+	[
+		// BL31~BL33 images are loaded into RAM (and then executed).
+		RAM( sToken($TeeID), bl31 ),
+		RAM( sToken($TeeID), bl32 ),
+		RAM( nsToken($ReeID), bl33 )
+	]
+
+
+////////////////////////////////////////////////////////////////////////////
+// Secure world is corrupted, and the attacker can read AND/OR modify
+// the Secure-world-related RAM, non-volatile storage and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule SwAttacker_Read_SwROM:
+    [ !ROM(sToken($TeeID), x) ]   --[ Reveal($TeeID, x) ]->    [ Out(x) ]
+
+rule SwAttacker_Read_SwFlash:
+    [ !Flash(sToken($TeeID), x) ]   --[ Reveal($TeeID, x) ]->    [ Out(x) ]
+
+rule SwAttacker_Read_SwRAM:
+    [ RAM(sToken($TeeID), x) ]  --[ Reveal($TeeID, x) ]->    [ Out(x) ]
+
+// rule SwAttacker_Write_SwROM:
+//     [ !ROM(sToken($TeeID), x),  In(y) ]  --[ Modification($TeeID, x, y) ]->    [ !ROM(sToken($TeeID), y) ]
+
+// rule SwAttacker_Write_SwFlash:
+//     [ !Flash(sToken($TeeID), x),  In(y) ]  --[ Modification($TeeID, x, y) ]->    [ !Flash(sToken($TeeID), y) ]
+
+// rule SwAttacker_Write_SwRAM:
+//     [ RAM(sToken($TeeID), x),  In(y) ]   --[ Modification($TeeID, x, y) ]->    [ !Flash(sToken($TeeID), y) ]
+
+
+////////////////////////////////////////////////////////////////////////////
+// Non-secure world is corrupted, and the attacker can read AND/OR modify
+// the NS-World-related RAM, non-volatile storage and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule NswAttacker_Read_NswFlash:
+    [ !Flash(nsToken($ReeID), x)  ]   --[ Reveal($ReeID, x) ]->    [ Out(x) ]
+
+rule NswAttacker_Read_NswRAM:
+    [ RAM(nsToken($ReeID), x)   ]  --[ Reveal($ReeID, x) ]->    [ Out(x) ]    
+
+rule NswAttacker_Write_NswFlash:
+    [ !Flash(nsToken($ReeID), x),  In( y ) ]  --[ Modification($ReeID, x, y) ]->    [ !Flash(nsToken($ReeID), y) ]
+
+rule NswAttacker_Write_NswRAM:
+    [ RAM(nsToken($ReeID), x),  In( y ) ]   --[ Modification($ReeID, x, y) ]->    [ !Flash(nsToken($ReeID), y) ]
+
+
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+
+
+restriction Equality:
+	"All x y #i. Eq(x,y) @i ==> x = y"
+
+	
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+
+
+// lemma SanityCheck0 [use_induction]:
+//  exists-trace "Ex #i. SanityCheck0('Arrived') @ #i"
+
+// lemma SanityCheck1 [use_induction]:
+//  exists-trace "Ex #i. SanityCheck1('Arrived') @ #i"
+
+// lemma SanityCheck2_1[use_induction]:
+// exists-trace "Ex #i. SanityCheck2_1('Arrived') @ #i"
+
+// lemma SanityCheck2_2[use_induction]:
+// exists-trace "Ex #i. SanityCheck2_2('Arrived') @ #i"
+
+// lemma SanityCheck2_3[use_induction]:
+// exists-trace "Ex #i. SanityCheck2_3('Arrived') @ #i"
+
+// lemma SanityCheck3[use_induction]:
+// exists-trace "Ex #i. SanityCheck3('Arrived') @ #i"
+
+
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+
+
+lemma aliveness:
+"
+  ( All x1 x2 x31 x32 x33 #i. 
+		RAMLayout(<'S', x1, x2, x31, x32>, <'NS', x33>) @ i
+    ==> 
+      ( Ex #j. Alive( 'Manufacturer_PlatformInitialization' ) @ j )		
+  )
+"
+
+
+lemma weak_agreement_for_BL:
+"
+	(
+	All x1 x2 x31 x32 x33  #i. 
+		RAMLayout( <'S', x1, x2, x31, x32>, <'NS', x33> ) @ i  
+		==>
+		(
+			Ex y1 y2 y31 y32 y33 #j1 #j2 #j31 #j32 #j33. 
+			Release_BL(y1) @ j1
+			& Release_BL(y2) @ j2
+			& Release_BL(y31) @ j31
+			& Release_BL(y32) @ j32
+			& Release_BL(y33) @ j33
+		)
+	)
+"
+
+
+lemma weak_agreement_for_BlSet:
+"
+	All x1 x2 x31 x32 x33 #i. 
+		RAMLayout( <'S', x1, x2, x31, x32>, <'NS', x33> ) @ i
+		==>
+		(
+			Ex #j y1 y2 y31 y32 y33.  
+				Release_BlSet( <y1, y2, y31, y32, y33> ) @ j
+		)
+"
+
+
+lemma non_injective_agreement_for_BL:
+"
+	(
+	All x1 x2 x31 x32 x33  #i. 
+		RAMLayout( <'S', x1, x2, x31, x32>, <'NS', x33> ) @ i  
+		==>
+		(
+			Ex #j1 #j2 #j31 #j32 #j33. 
+			Release_BL(x1) @ j1
+			& Release_BL(x2) @ j2
+			& Release_BL(x31) @ j31
+			& Release_BL(x32) @ j32
+			& Release_BL(x33) @ j33
+		)
+	)
+"
+
+
+lemma non_injective_agreement_for_BlSet:
+"
+	All x1 x2 x31 x32 x33  #i. 
+		RAMLayout( <'S', x1, x2, x31, x32>, <'NS', x33> ) @ i  
+		==>
+		Ex #j. Release_BlSet( <x1, x2, x31, x32, x33> ) @ j 
+"
+
+
+end

@@ -1,0 +1,431 @@
+theory FIDO2_WebAuthen_BasicAttestation_Svr_RW_NSW_R_SW_R
+
+begin
+
+functions:  
+            nsToken/1[private],   // access token for RAM/Flash of Non-Secure world on TEE-based platform   (e.g. Client)
+            sToken/1[private],    // access token for RAM/Flash of Secure world on TEE-based platform       (e.g. Authenticator)
+            svrToken/1[private]   // access token for RAM/Flash of server in WebAuthn protocol              (e.g. Server)
+
+builtins: hashing, signing
+
+/* ******************** Web Authentication Protocol involving entities ******************** */
+// User:          A user uses authenticator to authenticate himself/herself during the protocol.
+// Authenticator: A cryptographic entity, existing in the TEE world of the local device, can register a 
+//                user under a given Server and later assert possession of the registered public key credential, 
+//                and optionally verify the user, when requested by the TEE world.
+// Client:        Client-side of the protocol, existing in non-TEE world of the local device, processes and forwards the messages
+//                exchanging between the Authenticator and the Server.
+// Server:        Server-side of the protocol, existing in the remote server, registers and authenticates users during the protocol.
+// Manufacturer:  The Authenticator manufacturer, which generates and records attestation keys and certs for its Authenticators.
+//                In the basic-attestation mode, Authenticators with same model number (i.e. $AAGUID) share one attestation key and cert.
+
+
+/* ******************** Initialization step ( I1 ) ******************** */
+/* ******************** Initialization step ( I1 ) ******************** */
+/* ******************** Initialization step ( I1 ) ******************** */
+/* ******************** Initialization step ( I1 ) ******************** */
+/* ******************** Initialization step ( I1 ) ******************** */
+
+
+/*  (I1) The Manufacturer of Authenticator generates a pair of attestation keys (e.g. ~attestSk & pk(~attestSk)),
+    and use this pair of attestation keys for a batch of Authenticators with the same model (i.e. $AAGUID).
+    The action is done offline, and the attestation keys are placed in Authenticator when it's manufactured.
+*/
+rule Manufacturer_GenerateAttestKeyPairForAuthen:
+      [ 
+        Fr( ~attestSk )
+      ]
+    --[ 
+        ManuAttestKeyGeneration( $ManuID, $AAGUID, ~attestSk )
+      ]->
+      [ 
+        // The manufacturer prestores the attestation key and Authenticator ID on the server via offline method
+        !Flash( svrToken($SvrID), <$AAGUID, pk(~attestSk)> ),
+        // Attestation key is shipped in the Authenticator
+        !Flash( sToken($AAGUID), ~attestSk )
+      ]
+
+
+/* ******************** Registration step ( R1~R8 ) ******************** */
+/* ******************** Registration step ( R1~R8 ) ******************** */
+/* ******************** Registration step ( R1~R8 ) ******************** */
+/* ******************** Registration step ( R1~R8 ) ******************** */
+/* ******************** Registration step ( R1~R8 ) ******************** */
+
+
+/* (R1) User sends a registration request (with a $UserName) to Server via Client
+*/
+rule User_SendRegistrationRequest_to_Server_via_Client:
+      [ ] 
+    --[ ]->
+      [ 
+        RAM( nsToken($ClientID), $UserName ), 
+        Out(< $SvrID, $ClientID, <$UserName, 'Registration'> >)
+      ]
+
+
+/* (R2) Server (Relying Party) receives the registration request from User via Client,
+   generates a challenge ~chalR, and sends ~chalR to Client 
+*/
+rule Server_PublicKeyCredentialCreationOptions_to_Client:
+      [
+        In(< $SvrID, $ClientID, <$UserName, 'Registration'> >), 
+        Fr( ~chalR ) 
+      ] 
+      --[]->
+      [ 
+        RAM( svrToken($SvrID), <$UserName, ~chalR> ), 
+        Out(< $SvrID, $ClientID, <$SvrID, $UserName, ~chalR, 'Registration'> >)
+      ]
+
+
+/*  (R3) Client sends registration and credential generated request to Authenticator in the TEE world
+*/
+rule Client_AuthenticatorMakeCredential_Request_to_Authen:
+      let
+          clientData = <chalR, $ClientID>
+          clientDataHash = h(clientData)
+      in
+      [
+        In(< $SvrID, $ClientID, <$SvrID, $UserName, chalR, 'Registration'> >) 
+      ]
+    --[
+        SanityCheck1('Arrived')
+      ]->
+      [ 
+        RAM( nsToken($ClientID), chalR ),
+        RAM( nsToken($ClientID), $UserName ),
+        LOC( $ClientID, $AAGUID, <clientDataHash, $SvrID, $UserName, 'Registration'> ) 
+      ]
+
+
+/*  (R4.1) The TEE world shows the registration info to User. With User's verification, 
+    the Authenticator generates a pair of authentication keys, and then returns 
+    the related authenticator data, and signature signed by the attestation private key.
+
+    In this script, the attestation mode is basic attestation, which uses the attestation 
+    private key generated by Authenticator manufacturer as the attestation signing key.
+
+    NOTE: a random number ~nonce is used instead of monotonic increasing counter in Authenticator,
+    the ~nonce could be constant at zero if Authenticator doesn't support a counter.
+*/
+rule Authen_User_Allow_AuthenticatorMakeCredential_Response_to_Client:
+      let
+          // Authenticator computes authenticator data (i.e. AuthData)
+          authData = <$SvrID, ~nonce, $AAGUID, pk(~credSk)>
+          // Authenticator generates a basic attestation signature
+          attestSig = sign(<authData, clientDataHash>, attestSk)
+          attestObj = <authData, attestSig>
+      in
+      [ 
+        // Authenticator receives parameters from Client to generate basic attestation signature for registration.
+        LOC( $ClientID, $AAGUID, <clientDataHash, $SvrID, $UserName, 'Registration'> ),
+        // Authenticator reads basic attestaion private key from its flash
+        !Flash( sToken($AAGUID), attestSk ),
+        // Authenticator generates authentication credential key pair
+        Fr( ~credSk ),
+        // The nonce could be constant at zero if the authenticator doesn't support a global or per credential counter
+        Fr( ~nonce )
+      ]
+    --[
+        Alive( $AAGUID ),
+        UserRegVerification( $SvrID, $AAGUID, $UserName, ~credSk, 'Allow' ),
+        SanityCheck2_1('Arrived')
+      ]->
+      [ 
+        // Authenticator stores authentication credential source in the secure flash
+        !Flash( sToken($AAGUID), <$SvrID, $UserName, ~credSk> ),
+        // Authenticator sends the response to the Client
+        LOC( $ClientID, $AAGUID, attestObj )   
+      ]
+
+
+/*  (R4.2) The TEE world shows the registration info to User. With User's rejection, 
+    and the Authenticator returns an error 'NowAllowedError' to Client.
+*/
+rule Authen_User_Reject_AuthenticatorMakeCredential:
+      [ 
+        LOC( $ClientID, $AAGUID, <clientDataHash, $SvrID, $UserName, 'Registration'> ) 
+      ]
+    --[
+        Alive( $AAGUID ),
+        UserRegVerification( $SvrID, $AAGUID, $UserName, 'NULL', 'Reject' ),
+        SanityCheck2_2('Arrived')
+      ]->
+      [ 
+        // Authenticator User rejects the registration,
+        // and Authenticator sends an error to Client.
+        LOC( $ClientID, $AAGUID, 'NotAllowedError' )
+      ]
+
+
+/*  (R5) Client receives the generated credential resource from Authenticator,
+    and forwards the resource together with clientData to Server
+*/
+rule Client_AuthenticatorAttestationResponse_to_Server:
+      let
+          clientData = <chalR, $ClientID>
+      in
+      [ 
+        LOC( $ClientID, $AAGUID, attestObj ),
+        RAM( nsToken($ClientID), chalR )
+      ]
+    --[
+        SanityCheck3('Arrived')
+      ]->
+      [ 
+        !Flash( nsToken($ClientID), attestObj ),
+        Out(< $SvrID, $ClientID, <clientData, attestObj> >)
+      ]
+
+
+/*  (R6) Server prestores the requested attestation public key of the Authenticator,
+    and then checks the chanllenge and verifies the attestation signature.
+    If the operations succeed, Server registers User under $UserName and the generated credential resources.
+*/
+rule Server_ValidateAttestationAndRegister:
+      let
+          authData = <$SvrID, nonce, $AAGUID, pk(credSk)>
+          clientData = <chalR, $ClientID>
+          clientDataHash = h(clientData)
+      in
+      [ 
+
+        // The attestation key and Authenticator ID are prestored on the server
+        !Flash( svrToken($SvrID), <$AAGUID, attestPk> ),
+        // Server retrieves the challenge "chalR" from its RAM
+        RAM( svrToken($SvrID), <$UserName, chalR> ), 
+        // Server retrieves the received Client-sent registration and attestation messages from its RAM
+        In(< $SvrID, $ClientID, <<chalR, $ClientID>, <$SvrID, nonce, $AAGUID, pk(credSk)>, attestSig> >)
+      ]
+    --[
+        SanityCheck4('Arrived'),
+        ServerReceiveAttestPubKey( $SvrID, $ManuID, $AAGUID, attestPk ),
+        ServerRegisterAuthen( $SvrID, $AAGUID, $UserName, pk(credSk) ),
+        Eq( verify(attestSig, <authData, clientDataHash>, attestPk), true )  
+      ]->
+      [ 
+        // Server registers and stores authenticator's ID, credential public key in its flash
+        !Flash( svrToken($SvrID), <$AAGUID, $UserName, pk(credSk)> )
+      ]
+
+
+////////////////////////////////////////////////////////////////////////////
+// Server is corrupted, and the attacker can read AND/OR modify
+// the Server-related RAM, flash and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule SvrAttacker_Read_SvrFlash:
+    [ !Flash(svrToken($SvrID), x) ]   --[ Reveal($SvrID, x) ]->    [ Out(x) ]
+
+rule SvrAttacker_Read_SvrRAM:
+    [ RAM(svrToken($SvrID), x) ]  --[ Reveal($SvrID, x) ]->    [ Out(x) ]
+
+// rule SvrAttacker_Read_TLS:    
+//     [ TLS( $SvrID, $ClientID, x )   ]  --[ Reveal(<$SvrID,$ClientID>, x) ]->    [ Out(x) ] 
+
+rule SvrAttacker_Write_SvrFlash:
+    [ !Flash(svrToken($SvrID), x),  In(y) ]  --[ Modification($SvrID, x, y) ]->    [ !Flash(svrToken($SvrID), y) ]
+
+rule SvrAttacker_Write_SvrRAM:
+    [ RAM(svrToken($SvrID), x),  In(y) ]   --[ Modification($SvrID, x, y) ]->    [ !Flash(svrToken($SvrID), y) ]
+
+// rule SvrAttacker_Write_TLS:    
+//     [ TLS( $SvrID, $ClientID, x ),  In( y )   ]  --[ Modification(<$SvrID,$ClientID>, x, y) ]->    [ TLS( $SvrID, $ClientID, y ) ] 
+
+
+////////////////////////////////////////////////////////////////////////////
+// Secure world is corrupted, and the attacker can read AND/OR modify
+// the Secure-world-related RAM, flash and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule SwAttacker_Read_SwFlash:
+    [ !Flash(sToken($AAGUID), x) ]   --[ Reveal($AAGUID, x) ]->    [ Out(x) ]
+
+rule SwAttacker_Read_SwRAM:
+    [ RAM(sToken($AAGUID), x) ]  --[ Reveal($AAGUID, x) ]->    [ Out(x) ]
+
+rule SwAttacker_Read_LOC:    
+    [ LOC( $ClientID, $AAGUID, x )   ]  --[ Reveal(<$ClientID,$AAGUID>, x) ]->    [ Out(x) ] 
+
+// rule SwAttacker_Write_SwFlash:
+//     [ !Flash(sToken($AAGUID), x),  In(y) ]  --[ Modification($AAGUID, x, y) ]->    [ !Flash(sToken($AAGUID), y) ]
+
+// rule SwAttacker_Write_SwRAM:
+//     [ RAM(sToken($AAGUID), x),  In(y) ]   --[ Modification($AAGUID, x, y) ]->    [ !Flash(sToken($AAGUID), y) ]
+
+// rule SwAttacker_Write_LOC:    
+//     [ LOC( $ClientID, $AAGUID, x ),  In( y )   ]  --[ Modification(<$ClientID,$AAGUID>, x, y) ]->    [ LOC( $ClientID, $AAGUID, y ) ] 
+
+
+////////////////////////////////////////////////////////////////////////////
+// Non-secure world is corrupted, and the attacker can read AND/OR modify
+// the NS-World-related RAM, flash and channels.
+////////////////////////////////////////////////////////////////////////////
+
+rule NswAttacker_Read_NswFlash:
+    [ !Flash(nsToken($ClientID), x)  ]   --[ Reveal($ClientID, x) ]->    [ Out(x) ]
+
+rule NswAttacker_Read_NswRAM:
+    [ RAM(nsToken($ClientID), x)   ]  --[ Reveal($ClientID, x) ]->    [ Out(x) ]    
+
+rule NswAttacker_Read_LOC:    
+    [ LOC( $ClientID, $AAGUID, x )   ]  --[ Reveal(<$ClientID,$AAGUID>, x) ]->    [ Out(x) ] 
+
+rule NswAttacker_Read_TLS:    
+    [ TLS( $SvrID, $ClientID, x )   ]  --[ Reveal(<$SvrID,$ClientID>, x) ]->    [ Out(x) ] 
+
+// rule NswNswAttacker_Write_NswFlash:
+//     [ !Flash(nsToken($ClientID), x),  In( y ) ]  --[ Modification($ClientID, x, y) ]->    [ !Flash(nsToken($ClientID), y) ]
+
+// rule NswAttacker_Write_NswRAM:
+//     [ RAM(nsToken($ClientID), x),  In( y ) ]   --[ Modification($ClientID, x, y) ]->    [ !Flash(nsToken($ClientID), y) ]
+
+// rule NswAttacker_Write_LOC:    
+//     [ LOC( $ClientID, $AAGUID, x ),  In( y )   ]  --[ Modification(<$ClientID,$AAGUID>, x, y) ]->    [ LOC( $ClientID, $AAGUID, y ) ] 
+
+// rule NswAttacker_Write_TLS:    
+//     [ TLS( $SvrID, $ClientID, x ),  In( y )   ]  --[ Modification(<$SvrID,$ClientID>, x, y) ]->    [ TLS( $SvrID, $ClientID, y ) ] 
+
+
+restriction Equality:
+  "
+    All x y #i. Eq(x,y) @i ==> x = y
+  "
+
+
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+/* ******************** End of the protocol rules ******************** */
+
+
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+/* ******************** SANITY CHECK ******************** */
+
+
+// lemma SanityCheck1 [use_induction]:
+// exists-trace "Ex #i. SanityCheck1('Arrived') @ #i"
+
+// lemma SanityCheck2_1 [use_induction]:
+// exists-trace "Ex #i. SanityCheck2_1('Arrived') @ #i"
+
+// lemma SanityCheck2_2 [use_induction]:
+// exists-trace "Ex #i. SanityCheck2_2('Arrived') @ #i"
+
+// lemma SanityCheck3 [use_induction]:
+// exists-trace "Ex #i. SanityCheck3('Arrived') @ #i"
+
+// lemma SanityCheck4 [use_induction]:
+// exists-trace "Ex #i. SanityCheck4('Arrived') @ #i"
+
+
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+/* **************************************** SECRECY **************************************** */
+
+
+lemma authentication_private_key_secrecy:
+    "(All #i1 #i2 svrID aaguID userName credSk.
+    (
+      // Once User has allowed Authenticator to generate authentication key credSk,
+      UserRegVerification( svrID, aaguID, userName, credSk, 'Allow' ) @ i1
+      &
+      // and credSk is verified and registered by the Server during attestation,
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk) ) @ i2
+    )
+    // then the attacker can't get the credential private key credSk
+    ==> not (Ex #i3. K( credSk ) @ i3 )
+  )"
+
+
+lemma attestation_private_key_secrecy:
+  // Once the Authenticator credential is verified by the Server,
+    "(All #i1 #i2 #i3 svrID aaguID manuID userName credSk attestSk.
+    (
+      // If Manufacturer generates attestation key "attestSk" for Authenticator,
+      ManuAttestKeyGeneration( manuID, aaguID, attestSk ) @ i1
+      &
+      // and User has allowed Authenticator to generate authentication key credSk,
+      UserRegVerification( svrID, aaguID, userName, credSk, 'Allow' ) @ i2
+      &   
+      // and pk(attestSk) received from Manufacturer is used to verify credSk by the Server,
+      ServerReceiveAttestPubKey( svrID, manuID, aaguID, pk(attestSk) ) @ i3
+      &
+      // and credSk is verified and registered by the Server during attestation,
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk) ) @ i3
+    )
+    // then the attacker can't get the attestation private key attestSk
+    ==> not (Ex #i4. K( attestSk ) @ i4 )
+  )"
+
+
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+/* **************************************** Authentication **************************************** */
+
+
+lemma aliveness:
+"
+  ( All #i svrID aaguID userName credSk.
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk) ) @ i
+    ==> 
+      ( Ex #j. Alive( aaguID ) @ j )
+  )
+"
+
+
+lemma weak_agreement:
+"
+  ( All #i svrID aaguID userName credSk1.
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk1) ) @ i
+    ==> 
+      ( 
+        Ex credSk2 #j. 
+        UserRegVerification( svrID, aaguID, userName, credSk2, 'Allow' ) @ j
+       )
+  )
+"
+
+
+lemma ni_agreement:
+"
+  ( All #i svrID aaguID userName credSk.
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk) ) @ i
+    ==> 
+      ( 
+        Ex #j. 
+        UserRegVerification( svrID, aaguID, userName, credSk, 'Allow' ) @ j
+      )
+  )
+"
+
+
+lemma i_agreement:
+"
+  ( All #i svrID aaguID userName credSk.
+      ServerRegisterAuthen( svrID, aaguID, userName, pk(credSk) ) @ i
+    ==> 
+      ( 
+        Ex #j. 
+        UserRegVerification( svrID, aaguID, userName, credSk, 'Allow' ) @ j
+        & #j < #i
+        & not ( Ex svrID2 aaguID2 userName2 #i2. 
+                   ServerRegisterAuthen( svrID2, aaguID2, userName2, pk(credSk) ) @ i2
+                &  not (#i2 = #i)
+              )
+      )
+  )
+"
+
+
+end
